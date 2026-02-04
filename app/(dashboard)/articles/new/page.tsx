@@ -22,17 +22,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sparkles, FileText, Eye, Loader2 } from "lucide-react";
-
-const sites = [
-  { value: "json-tools", label: "JSON Tools" },
-  { value: "tool-directory", label: "Tool Directory" },
-  { value: "domnest", label: "Domnest" },
-];
-
-const articleTypes = [
-  { value: "pillar", label: "Pillar", description: "Comprehensive, long-form content (2500+ words)" },
-  { value: "supporting", label: "Supporting", description: "Focused content linking to pillar (1200-2000 words)" },
-];
+import {
+  SITES,
+  ARTICLE_TYPES,
+  BASE_PROMPT,
+  CONTENT_OBJECTIVE,
+  STRUCTURE_RULES,
+  ARTICLE_TYPE_RULES,
+  STYLE_GUIDE,
+  SEO_REQUIREMENTS,
+  OUTPUT_FORMAT,
+  getSiteRules,
+  getSiteConfig,
+} from "@/lib/prompt-config";
 
 interface FormData {
   site: string;
@@ -63,125 +65,92 @@ export default function NewArticlePage() {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  // Assemble the prompt following the rules:
+  // 1. Start with shared base prompt
+  // 2. Append site-specific rules
+  // 3. Append user-defined instructions last
   const promptPreview = useMemo(() => {
-    const siteName = sites.find((s) => s.value === formData.site)?.label || "{{group_title}}";
-    const typeName = articleTypes.find((t) => t.value === formData.articleType)?.label?.toLowerCase() || "{{type}}";
+    const siteConfig = getSiteConfig(formData.site);
+    const siteName = siteConfig?.label || "{{group_title}}";
+    const siteRules = getSiteRules(formData.site);
+    
+    const articleTypeConfig = ARTICLE_TYPES.find((t) => t.value === formData.articleType);
+    const typeName = articleTypeConfig?.label?.toLowerCase() || "{{type}}";
+    
     const secondaryList = formData.secondaryKeywords
       ? formData.secondaryKeywords.split(",").map((k) => k.trim()).filter(Boolean).join(", ")
       : "{{secondary_keywords}}";
 
-    return `You are a senior SEO content strategist and expert writer.
-
-Write a high-quality, original, and search-optimized article for a professional audience.
-
-This article belongs to the content cluster: ${siteName}
-Article type: ${typeName} (pillar or supporting)
-
-CONTENT OBJECTIVE
-- Match the target audience's search intent exactly
-- Provide clear, practical, and accurate information
-- Prioritize usefulness over word count
-
-CONTENT BRIEF
+    // Build content brief section
+    const contentBrief = `CONTENT BRIEF
 Title: ${formData.title || "{{title}}"}
 Primary keyword: ${formData.primaryKeyword || "{{primary_keyword}}"}
 Secondary keywords: ${secondaryList}
 Audience intent: ${formData.audienceIntent || "{{audience_intent}}"}
 Recommended internal links: ${formData.internalLinks || "{{internal_links}}"}
-Geo focus: {{geo}}
+Geo focus: {{geo}}`;
 
-STRUCTURE RULES
-- Use proper heading hierarchy (H2, H3)
-- Include 4–6 H2 sections
-- Each H2 must have 1–2 H3s where appropriate
-- Include a concise introduction (no generic AI openings)
-- End with a clear conclusion and next steps
+    // Assemble prompt in order: base → content brief → structure → site rules → style → seo → custom → output
+    const promptParts = [
+      BASE_PROMPT,
+      `This article belongs to the content cluster: ${siteName}
+Article type: ${typeName} (pillar or supporting)`,
+      CONTENT_OBJECTIVE,
+      contentBrief,
+      STRUCTURE_RULES,
+      ARTICLE_TYPE_RULES,
+      // Site-specific rules are appended here based on selection
+      siteRules || "{{site_specific_rules}}",
+      STYLE_GUIDE,
+      SEO_REQUIREMENTS,
+      // User-defined instructions are always appended last
+      formData.customInstructions ? `ADDITIONAL INSTRUCTIONS\n${formData.customInstructions}` : null,
+      OUTPUT_FORMAT,
+    ].filter(Boolean);
 
-ARTICLE TYPE RULES
-If type is "pillar":
-- Write a comprehensive, evergreen guide (1200–1500 words)
-- Cover strategy, concepts, frameworks, and examples
-- Link to relevant supporting articles
-
-If type is "supporting":
-- Focus on a specific sub-topic or long-tail query (800–1000 words)
-- Provide focused explanations, tools, and examples
-- Link back to the pillar article
-
-STYLE GUIDE
-- Clear, direct, and conversational
-- Short sentences, simple words
-- Active voice
-- Address the reader as "you"
-- No hype, clichés, jargon, emojis, hashtags, or filler
-- Avoid vague or conditional language when certainty is possible
-
-SEO REQUIREMENTS
-- Natural keyword placement
-- Optimize sections for featured snippets where applicable
-- Include 2024–2025 statistics or trends where relevant
-- Include 1–2 expert quotes
-- Add 3–8 internal links and 2–5 relevant external links
-- Include a 5–6 question FAQ section
-- Optimize title tag and meta description
-- Include JSON-LD Article schema (https://schema.org/Article)
-${formData.customInstructions ? `\nADDITIONAL INSTRUCTIONS\n${formData.customInstructions}` : ""}
-
-OUTPUT FORMAT
-Return valid JSON only with the following structure:
-{
-  "title": "<same as input title>",
-  "content": "<full markdown article>",
-  "outline": [...],
-  "keywords": [...],
-  "type": "<pillar or supporting>",
-  "group_title": "<same as input group_title>"
-}`;
+    return promptParts.join("\n\n");
   }, [formData]);
 
   const handleGenerate = async () => {
     setIsGenerating(true);
-    // Simulating API call - replace with actual LLM integration
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setGeneratedContent(`# ${formData.title || "Your Article Title"}
+    setGeneratedContent("");
 
-## Introduction
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ prompt: promptPreview }),
+      });
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+      const result = await response.json();
 
-## What is ${formData.primaryKeyword || "Your Topic"}?
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to generate article");
+      }
 
-Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-### Key Benefits
-
-1. **Benefit One** - Description of the first benefit
-2. **Benefit Two** - Description of the second benefit
-3. **Benefit Three** - Description of the third benefit
-
-## How to Get Started
-
-Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis.
-
-### Step 1: Initial Setup
-
-Content for step one goes here with detailed instructions.
-
-### Step 2: Configuration
-
-Content for step two with configuration details.
-
-## Best Practices
-
-- Practice one with explanation
-- Practice two with explanation
-- Practice three with explanation
-
-## Conclusion
-
-Wrap up the article with key takeaways and a call to action.
-`);
-    setIsGenerating(false);
+      // Extract content from the response
+      if (result.data?.content) {
+        // If content is a string (markdown), use it directly
+        if (typeof result.data.content === "string") {
+          setGeneratedContent(result.data.content);
+        } else {
+          // If it's the full JSON response, stringify it nicely
+          setGeneratedContent(JSON.stringify(result.data, null, 2));
+        }
+      } else {
+        // Fallback to raw response
+        setGeneratedContent(result.raw || "No content generated");
+      }
+    } catch (error) {
+      console.error("Generation error:", error);
+      setGeneratedContent(
+        `Error generating article: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const isFormValid = formData.site && formData.articleType && formData.title && formData.primaryKeyword;
@@ -222,9 +191,14 @@ Wrap up the article with key takeaways and a call to action.
                     <SelectValue placeholder="Select a site" />
                   </SelectTrigger>
                   <SelectContent>
-                    {sites.map((site) => (
+                    {SITES.map((site) => (
                       <SelectItem key={site.value} value={site.value}>
-                        {site.label}
+                        <div>
+                          <div className="font-medium">{site.label}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {site.description}
+                          </div>
+                        </div>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -242,7 +216,7 @@ Wrap up the article with key takeaways and a call to action.
                     <SelectValue placeholder="Select article type" />
                   </SelectTrigger>
                   <SelectContent>
-                    {articleTypes.map((type) => (
+                    {ARTICLE_TYPES.map((type) => (
                       <SelectItem key={type.value} value={type.value}>
                         <div>
                           <div className="font-medium">{type.label}</div>
